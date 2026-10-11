@@ -91,6 +91,13 @@ def registered_refund_tool(client):
     )
 
 
+REFUND_ARGUMENTS = {
+    "invoice_id": "INV-1002",
+    "amount": 25000,
+    "reason": "Duplicate charge reported by customer",
+}
+
+
 def agent_headers(agent):
     return {"X-API-Key": agent["api_key"]}
 
@@ -337,10 +344,11 @@ def test_unknown_tool_is_denied(
     assert response.json()["detail"] == "Tool not found."
 
 
-def test_sensitive_operation_requires_approval(
+def test_invalid_arguments_are_denied_and_create_no_approval(
     client,
     registered_agent,
     registered_tool,
+    reviewer_headers,
 ):
     response = validate_call(
         client,
@@ -352,8 +360,16 @@ def test_sensitive_operation_requires_approval(
     assert response.status_code == 200, response.text
 
     data = response.json()
-    assert data["decision"] == "REQUIRE_APPROVAL"
+    assert data["decision"] == "DENY"
     assert data["request_id"]
+
+    # A denied request must never appear in the approval queue.
+    approval = find_approval(
+        client,
+        reviewer_headers,
+        data["request_id"],
+    )
+    assert approval is None
 
 
 def test_validation_creates_audit_record(
@@ -419,7 +435,23 @@ def test_approval_review_rejects_invalid_reviewer_key(
 # Execution safety
 # ---------------------------------------------------------
 
-def test_sensitive_execution_without_approval_is_blocked(
+def test_refund_execution_without_approval_is_blocked(
+    client,
+    registered_agent,
+    registered_refund_tool,
+):
+    response = execute_call(
+        client,
+        registered_agent,
+        "issue_refund",
+        REFUND_ARGUMENTS,
+    )
+
+    assert response.status_code == 403
+    assert "detail" in response.json()
+
+
+def test_invalid_arguments_execution_is_blocked(
     client,
     registered_agent,
     registered_tool,
@@ -431,21 +463,25 @@ def test_sensitive_execution_without_approval_is_blocked(
         {"action": "refund", "invoice_id": "INV-1001"},
     )
 
-    assert response.status_code == 403
-    assert "detail" in response.json()
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["decision"] == "DENY"
+    assert data["status"] == "BLOCKED"
+    assert data["result"] is None
 
 
-def test_sensitive_execution_with_pending_approval_is_blocked(
+def test_refund_execution_with_pending_approval_is_blocked(
     client,
     registered_agent,
-    registered_tool,
+    registered_refund_tool,
     reviewer_headers,
 ):
     validation = validate_call(
         client,
         registered_agent,
-        "get_invoice",
-        {"action": "refund", "invoice_id": "INV-1001"},
+        "issue_refund",
+        REFUND_ARGUMENTS,
     )
 
     assert validation.status_code == 200, validation.text
@@ -464,8 +500,8 @@ def test_sensitive_execution_with_pending_approval_is_blocked(
     execution = execute_call(
         client,
         registered_agent,
-        "get_invoice",
-        {"action": "refund", "invoice_id": "INV-1001"},
+        "issue_refund",
+        REFUND_ARGUMENTS,
         approval_request_id=request_id,
     )
 
@@ -485,13 +521,6 @@ def test_sensitive_execution_with_pending_approval_is_blocked(
 # ---------------------------------------------------------
 # Refund approval workflow (issue_refund always needs approval)
 # ---------------------------------------------------------
-
-REFUND_ARGUMENTS = {
-    "invoice_id": "INV-1002",
-    "amount": 25000,
-    "reason": "Duplicate charge reported by customer",
-}
-
 
 def test_refund_always_requires_approval(
     client,

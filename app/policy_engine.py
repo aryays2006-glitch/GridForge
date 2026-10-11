@@ -22,6 +22,13 @@ ALLOWED_TOOLS = {
     "issue_refund",
 }
 
+# The exact arguments each tool accepts. Extra or missing
+# arguments make the request invalid, and invalid requests are denied.
+TOOL_ARGUMENT_SCHEMAS = {
+    "get_invoice": {"invoice_id"},
+    "issue_refund": {"invoice_id", "amount", "reason"},
+}
+
 # Tools that change state or move money. These need a human
 # decision every time, regardless of what their arguments contain.
 ALWAYS_REQUIRE_APPROVAL_TOOLS = {
@@ -73,6 +80,20 @@ def contains_sensitive_operation(value: Any) -> bool:
     return False
 
 
+def arguments_match_schema(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> bool:
+    """True only if the arguments are exactly the set the tool accepts."""
+
+    expected = TOOL_ARGUMENT_SCHEMAS.get(tool_name)
+
+    if expected is None:
+        return False
+
+    return set(arguments.keys()) == expected
+
+
 def evaluate_tool_call(
     tool_name: str,
     arguments: dict[str, Any],
@@ -92,6 +113,16 @@ def evaluate_tool_call(
             decision=DecisionType.DENY,
             reason="The requested tool is not on the allowlist.",
             risk_score=90,
+        )
+
+    if not arguments_match_schema(tool_name, arguments):
+        return PolicyDecision(
+            decision=DecisionType.DENY,
+            reason=(
+                "The arguments do not match what this tool accepts "
+                "(unexpected or missing fields)."
+            ),
+            risk_score=75,
         )
 
     if tool_name in ALWAYS_REQUIRE_APPROVAL_TOOLS:
