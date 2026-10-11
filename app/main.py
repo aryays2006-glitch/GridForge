@@ -1,10 +1,9 @@
-
 import os
 import secrets
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app import models, tool_models
@@ -45,6 +44,21 @@ class AuditLogResponse(BaseModel):
     reason: str
     risk_score: int
     created_at: datetime
+
+
+class PermissionGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool_name: str = Field(min_length=1, max_length=100)
+
+
+class PermissionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    agent_id: int
+    tool_name: str
+    granted_at: datetime
 
 
 def get_db():
@@ -220,6 +234,97 @@ def list_tools(db: Session = Depends(get_db)):
     return (
         db.query(tool_models.Tool)
         .order_by(tool_models.Tool.id)
+        .all()
+    )
+
+
+@app.post(
+    "/api/v1/agents/{agent_id}/permissions",
+    response_model=PermissionResponse,
+    status_code=201,
+    dependencies=[Depends(verify_reviewer_key)],
+)
+def grant_tool_permission(
+    agent_id: int,
+    grant: PermissionGrantRequest,
+    db: Session = Depends(get_db),
+):
+    agent = (
+        db.query(models.Agent)
+        .filter(models.Agent.id == agent_id)
+        .first()
+    )
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+
+    tool_name = grant.tool_name.strip()
+
+    tool = (
+        db.query(tool_models.Tool)
+        .filter(tool_models.Tool.name == tool_name)
+        .first()
+    )
+
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found.")
+
+    existing = (
+        db.query(tool_models.AgentToolPermission)
+        .filter(
+            tool_models.AgentToolPermission.agent_id == agent.id,
+            tool_models.AgentToolPermission.tool_name == tool.name,
+        )
+        .first()
+    )
+
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail="This agent already has permission for this tool.",
+        )
+
+    permission = tool_models.AgentToolPermission(
+        agent_id=agent.id,
+        tool_name=tool.name,
+    )
+
+    try:
+        db.add(permission)
+        db.commit()
+        db.refresh(permission)
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="The permission could not be saved.",
+        )
+
+    return permission
+
+
+@app.get(
+    "/api/v1/agents/{agent_id}/permissions",
+    response_model=list[PermissionResponse],
+    dependencies=[Depends(verify_reviewer_key)],
+)
+def list_tool_permissions(
+    agent_id: int,
+    db: Session = Depends(get_db),
+):
+    agent = (
+        db.query(models.Agent)
+        .filter(models.Agent.id == agent_id)
+        .first()
+    )
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+
+    return (
+        db.query(tool_models.AgentToolPermission)
+        .filter(tool_models.AgentToolPermission.agent_id == agent.id)
+        .order_by(tool_models.AgentToolPermission.id)
         .all()
     )
 

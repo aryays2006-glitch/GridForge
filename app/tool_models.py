@@ -1,5 +1,12 @@
-
-from sqlalchemy import Boolean, Column, Integer, String, DateTime, JSON
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Integer,
+    String,
+    DateTime,
+    JSON,
+    UniqueConstraint,
+)
 from sqlalchemy.sql import func
 
 from app.database import Base
@@ -65,3 +72,27 @@ class ApprovalRequest(Base):
     )
 
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class AgentToolPermission(Base):
+    """Records that one specific agent may use one specific tool."""
+
+    __tablename__ = "agent_tool_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id",
+            "tool_name",
+            name="uq_agent_tool_permission",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    agent_id = Column(Integer, nullable=False, index=True)
+    tool_name = Column(String, nullable=False, index=True)
+
+    granted_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
