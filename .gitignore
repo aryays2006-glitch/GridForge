@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local databases (contain API keys)
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+all_code.txt
