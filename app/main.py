@@ -20,7 +20,11 @@ from app.approval_schemas import (
     ApprovalReviewRequest,
     ApprovalRequestResponse,
 )
-from app.policy_engine import evaluate_tool_call
+from app.policy_engine import (
+    DecisionType as PolicyDecisionType,
+    PolicyDecision,
+    evaluate_tool_call,
+)
 from app.mock_tools import execute_mock_tool
 
 
@@ -140,6 +144,43 @@ def record_audit(
             arguments=arguments,
         )
     )
+
+
+def evaluate_for_agent(
+    db: Session,
+    agent_id: int,
+    tool: tool_models.Tool,
+    arguments: dict,
+) -> PolicyDecision:
+    """Run the normal policy checks, then check this agent's permission."""
+
+    policy_result = evaluate_tool_call(
+        tool_name=tool.name,
+        arguments=arguments,
+        is_active=tool.is_active,
+    )
+
+    # Inactive tools, bad arguments and so on are already denied.
+    if policy_result.decision == PolicyDecisionType.DENY:
+        return policy_result
+
+    permission = (
+        db.query(tool_models.AgentToolPermission)
+        .filter(
+            tool_models.AgentToolPermission.agent_id == agent_id,
+            tool_models.AgentToolPermission.tool_name == tool.name,
+        )
+        .first()
+    )
+
+    if permission is None:
+        return PolicyDecision(
+            decision=PolicyDecisionType.DENY,
+            reason="This agent has not been granted permission to use this tool.",
+            risk_score=95,
+        )
+
+    return policy_result
 
 
 @app.get("/health")
@@ -349,10 +390,11 @@ def validate_tool_call(
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found.")
 
-    policy_result = evaluate_tool_call(
-        tool_name=tool.name,
+    policy_result = evaluate_for_agent(
+        db=db,
+        agent_id=agent.id,
+        tool=tool,
         arguments=request.arguments,
-        is_active=tool.is_active,
     )
 
     request_id = secrets.token_hex(16)
@@ -419,10 +461,11 @@ def execute_tool_call(
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found.")
 
-    policy_result = evaluate_tool_call(
-        tool_name=tool.name,
+    policy_result = evaluate_for_agent(
+        db=db,
+        agent_id=agent.id,
+        tool=tool,
         arguments=request.arguments,
-        is_active=tool.is_active,
     )
 
     decision = policy_result.decision.value

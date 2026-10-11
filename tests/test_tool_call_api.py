@@ -12,6 +12,7 @@ def client():
 
 @pytest.fixture
 def registered_agent(client):
+    """A fresh agent with NO tool permissions."""
     response = client.post(
         "/api/v1/agents",
         json={"name": "GridForgeTestAgent"},
@@ -100,6 +101,35 @@ REFUND_ARGUMENTS = {
 
 def agent_headers(agent):
     return {"X-API-Key": agent["api_key"]}
+
+
+def grant_permission(client, reviewer_headers, agent, tool_name):
+    return client.post(
+        f"/api/v1/agents/{agent['agent_id']}/permissions",
+        headers=reviewer_headers,
+        json={"tool_name": tool_name},
+    )
+
+
+@pytest.fixture
+def permitted_agent(
+    client,
+    registered_agent,
+    registered_tool,
+    registered_refund_tool,
+    reviewer_headers,
+):
+    """A fresh agent granted both get_invoice and issue_refund."""
+    for tool_name in ("get_invoice", "issue_refund"):
+        response = grant_permission(
+            client,
+            reviewer_headers,
+            registered_agent,
+            tool_name,
+        )
+        assert response.status_code == 201, response.text
+
+    return registered_agent
 
 
 def validate_call(client, agent, tool_name, arguments):
@@ -310,12 +340,11 @@ def test_oversized_arguments_are_rejected(
 
 def test_allowlisted_tool_returns_allow_decision(
     client,
-    registered_agent,
-    registered_tool,
+    permitted_agent,
 ):
     response = validate_call(
         client,
-        registered_agent,
+        permitted_agent,
         "get_invoice",
         {"invoice_id": "INV-1001"},
     )
@@ -346,13 +375,12 @@ def test_unknown_tool_is_denied(
 
 def test_invalid_arguments_are_denied_and_create_no_approval(
     client,
-    registered_agent,
-    registered_tool,
+    permitted_agent,
     reviewer_headers,
 ):
     response = validate_call(
         client,
-        registered_agent,
+        permitted_agent,
         "get_invoice",
         {"action": "refund", "invoice_id": "INV-1001"},
     )
@@ -374,12 +402,11 @@ def test_invalid_arguments_are_denied_and_create_no_approval(
 
 def test_validation_creates_audit_record(
     client,
-    registered_agent,
-    registered_tool,
+    permitted_agent,
 ):
     validation = validate_call(
         client,
-        registered_agent,
+        permitted_agent,
         "get_invoice",
         {"invoice_id": "INV-1001"},
     )
@@ -390,6 +417,158 @@ def test_validation_creates_audit_record(
     assert audit_response.status_code == 200, audit_response.text
 
     assert isinstance(audit_response.json(), list)
+
+
+# ---------------------------------------------------------
+# Per-agent tool permissions
+# ---------------------------------------------------------
+
+def test_agent_without_permission_is_denied(
+    client,
+    registered_agent,
+    registered_tool,
+):
+    response = validate_call(
+        client,
+        registered_agent,
+        "get_invoice",
+        {"invoice_id": "INV-1001"},
+    )
+
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["decision"] == "DENY"
+    assert "permission" in data["reason"].lower()
+
+
+def test_agent_without_permission_cannot_execute(
+    client,
+    registered_agent,
+    registered_tool,
+):
+    response = execute_call(
+        client,
+        registered_agent,
+        "get_invoice",
+        {"invoice_id": "INV-1001"},
+    )
+
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["decision"] == "DENY"
+    assert data["status"] == "BLOCKED"
+    assert data["result"] is None
+
+
+def test_refund_without_permission_is_denied_and_creates_no_approval(
+    client,
+    registered_agent,
+    registered_refund_tool,
+    reviewer_headers,
+):
+    response = validate_call(
+        client,
+        registered_agent,
+        "issue_refund",
+        REFUND_ARGUMENTS,
+    )
+
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["decision"] == "DENY"
+
+    approval = find_approval(
+        client,
+        reviewer_headers,
+        data["request_id"],
+    )
+    assert approval is None
+
+
+def test_permission_for_one_tool_does_not_unlock_another(
+    client,
+    registered_agent,
+    registered_tool,
+    registered_refund_tool,
+    reviewer_headers,
+):
+    grant = grant_permission(
+        client,
+        reviewer_headers,
+        registered_agent,
+        "get_invoice",
+    )
+    assert grant.status_code == 201, grant.text
+
+    allowed = validate_call(
+        client,
+        registered_agent,
+        "get_invoice",
+        {"invoice_id": "INV-1001"},
+    )
+    assert allowed.json()["decision"] == "ALLOW"
+
+    blocked = validate_call(
+        client,
+        registered_agent,
+        "issue_refund",
+        REFUND_ARGUMENTS,
+    )
+    assert blocked.json()["decision"] == "DENY"
+
+
+def test_granting_permission_requires_reviewer_key(
+    client,
+    registered_agent,
+    registered_tool,
+):
+    response = client.post(
+        f"/api/v1/agents/{registered_agent['agent_id']}/permissions",
+        json={"tool_name": "get_invoice"},
+    )
+
+    assert response.status_code in (401, 403, 503)
+
+
+def test_duplicate_permission_grant_is_rejected(
+    client,
+    registered_agent,
+    registered_tool,
+    reviewer_headers,
+):
+    first = grant_permission(
+        client,
+        reviewer_headers,
+        registered_agent,
+        "get_invoice",
+    )
+    assert first.status_code == 201, first.text
+
+    second = grant_permission(
+        client,
+        reviewer_headers,
+        registered_agent,
+        "get_invoice",
+    )
+    assert second.status_code == 409
+
+
+def test_granting_unknown_tool_is_rejected(
+    client,
+    registered_agent,
+    reviewer_headers,
+):
+    response = grant_permission(
+        client,
+        reviewer_headers,
+        registered_agent,
+        "tool_that_does_not_exist",
+    )
+
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------
@@ -437,12 +616,11 @@ def test_approval_review_rejects_invalid_reviewer_key(
 
 def test_refund_execution_without_approval_is_blocked(
     client,
-    registered_agent,
-    registered_refund_tool,
+    permitted_agent,
 ):
     response = execute_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
     )
@@ -453,12 +631,11 @@ def test_refund_execution_without_approval_is_blocked(
 
 def test_invalid_arguments_execution_is_blocked(
     client,
-    registered_agent,
-    registered_tool,
+    permitted_agent,
 ):
     response = execute_call(
         client,
-        registered_agent,
+        permitted_agent,
         "get_invoice",
         {"action": "refund", "invoice_id": "INV-1001"},
     )
@@ -473,13 +650,12 @@ def test_invalid_arguments_execution_is_blocked(
 
 def test_refund_execution_with_pending_approval_is_blocked(
     client,
-    registered_agent,
-    registered_refund_tool,
+    permitted_agent,
     reviewer_headers,
 ):
     validation = validate_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
     )
@@ -499,7 +675,7 @@ def test_refund_execution_with_pending_approval_is_blocked(
 
     execution = execute_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
         approval_request_id=request_id,
@@ -524,12 +700,11 @@ def test_refund_execution_with_pending_approval_is_blocked(
 
 def test_refund_always_requires_approval(
     client,
-    registered_agent,
-    registered_refund_tool,
+    permitted_agent,
 ):
     response = validate_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
     )
@@ -540,13 +715,12 @@ def test_refund_always_requires_approval(
 
 def test_rejected_approval_cannot_execute(
     client,
-    registered_agent,
-    registered_refund_tool,
+    permitted_agent,
     reviewer_headers,
 ):
     validation = validate_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
     )
@@ -573,7 +747,7 @@ def test_rejected_approval_cannot_execute(
 
     execution = execute_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
         approval_request_id=request_id,
@@ -593,13 +767,12 @@ def test_rejected_approval_cannot_execute(
 
 def test_approved_request_executes_mock_tool(
     client,
-    registered_agent,
-    registered_refund_tool,
+    permitted_agent,
     reviewer_headers,
 ):
     validation = validate_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
     )
@@ -628,7 +801,7 @@ def test_approved_request_executes_mock_tool(
 
     execution = execute_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
         approval_request_id=request_id,
@@ -654,13 +827,12 @@ def test_approved_request_executes_mock_tool(
 
 def test_executed_approval_cannot_be_reused(
     client,
-    registered_agent,
-    registered_refund_tool,
+    permitted_agent,
     reviewer_headers,
 ):
     validation = validate_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
     )
@@ -686,7 +858,7 @@ def test_executed_approval_cannot_be_reused(
 
     first_execution = execute_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
         approval_request_id=request_id,
@@ -697,7 +869,7 @@ def test_executed_approval_cannot_be_reused(
 
     second_execution = execute_call(
         client,
-        registered_agent,
+        permitted_agent,
         "issue_refund",
         REFUND_ARGUMENTS,
         approval_request_id=request_id,
