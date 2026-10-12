@@ -1,9 +1,10 @@
+
 # Python
 __pycache__/
 *.py[cod]
 *.pyo
 
-# Virtual environment
+# Virtual environments
 .venv/
 venv/
 env/
@@ -11,31 +12,27 @@ env/
 # Environment variables and secrets
 .env
 .env.*
+!.env.example
+.streamlit/secrets.toml
 
-# IDE
-.vscode/
-.idea/
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-# Python
-.venv/
-__pycache__/
-*.pyc
-
-# Local databases (contain API keys)
+# Local databases
 *.db
 *.sqlite
 *.sqlite3
 
-# Temporary files
+# IDE and editor
+.vscode/
+.idea/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs and temporary files
+*.log
 all_code.txt
+
+# OS files
+.DS_Store
+Thumbs.db

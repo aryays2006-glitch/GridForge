@@ -86,7 +86,8 @@ def verify_reviewer_key(
             status_code=503,
             detail="Reviewer access is not configured. Set GRIDFORGE_REVIEWER_KEY.",
         )
-
+    
+    
     if not x_reviewer_key or not secrets.compare_digest(
         configured_key,
         x_reviewer_key,
